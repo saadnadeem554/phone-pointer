@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Balloon Popper</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #87ceeb; overflow: hidden; }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 20px; pointer-events: none; z-index: 10;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,0.35);
+  }
+  #hud .score { font-size: 28px; font-weight: 700; }
+  #hud .lives { font-size: 22px; }
+  #hud .status { font-size: 13px; opacity: 0.85; font-family: monospace; }
+  #overlay {
+    position: fixed; inset: 0; display: none; align-items: center;
+    justify-content: center; flex-direction: column; z-index: 20;
+    background: rgba(0,0,0,0.55); color: #fff;
+    font-family: 'Segoe UI', system-ui, sans-serif; text-align: center;
+  }
+  #overlay.show { display: flex; }
+  #overlay h1 { margin: 0 0 8px; font-size: 48px; }
+  #overlay p { margin: 6px 0; font-size: 18px; opacity: 0.9; }
+  #overlay .sub { font-size: 14px; opacity: 0.65; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="score">Score: <span id="scoreVal">0</span></div>
+  <div class="status" id="status">Connecting...</div>
+  <div class="lives" id="livesVal">♥ ♥ ♥</div>
+</div>
+<div id="overlay" class="show">
+  <h1 id="overlayTitle">Balloon Popper</h1>
+  <p id="overlayMsg">Tilt your phone to move the pointer</p>
+  <p>Pop balloons before they float away!</p>
+  <p class="sub">Press Space or click to start · <a href="/shooter.html">Space Shooter</a></p>
+</div>
+<script>
+  const SENSITIVITY = 2000;
+  const POINTER_R = 18;
+  const MAX_LIVES = 3;
+  let spawnInterval = 900;
+  const BALLOON_COLORS = [
+    [255, 90, 90], [255, 170, 60], [255, 230, 70],
+    [90, 220, 120], [80, 180, 255], [200, 120, 255],
+  ];
+
+  let px, py, ws;
+  let score = 0;
+  let lives = MAX_LIVES;
+  let playing = false;
+  let lastSpawn = 0;
+  let balloons = [];
+  let particles = [];
+  let clouds = [];
+
+  const statusEl = document.getElementById('status');
+  const scoreEl = document.getElementById('scoreVal');
+  const livesEl = document.getElementById('livesVal');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlayMsg = document.getElementById('overlayMsg');
+
+  function connect() {
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${wsProtocol}//${location.host}`);
+    ws.onopen = () => { statusEl.textContent = 'Phone connected'; };
+    ws.onclose = () => {
+      statusEl.textContent = 'Reconnecting...';
+      setTimeout(connect, 1000);
+    };
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.shoot) return;
+      if (typeof data.dx !== 'number') return;
+      px += data.dx * SENSITIVITY;
+      py += data.dy * SENSITIVITY;
+      px = constrain(px, POINTER_R, width - POINTER_R);
+      py = constrain(py, POINTER_R, height - POINTER_R);
+    };
+  }
+
+  function updateHud() {
+    scoreEl.textContent = score;
+    livesEl.textContent = '♥ '.repeat(lives).trim() || '—';
+  }
+
+  function startGame() {
+    playing = true;
+    score = 0;
+    lives = MAX_LIVES;
+    balloons = [];
+    particles = [];
+    lastSpawn = millis();
+    spawnInterval = 900;
+    px = width / 2;
+    py = height * 0.75;
+    overlay.classList.remove('show');
+    updateHud();
+  }
+
+  function endGame() {
+    playing = false;
+    overlayTitle.textContent = 'Game Over';
+    overlayMsg.textContent = `Final score: ${score}`;
+    overlay.querySelector('.sub').textContent = 'Press Space or click to play again';
+    overlay.classList.add('show');
+  }
+
+  function spawnBalloon() {
+    const r = random(28, 44);
+    balloons.push({
+      x: random(r + 10, width - r - 10),
+      y: height + r,
+      r,
+      speed: random(1.2, 2.4),
+      wobble: random(TWO_PI),
+      color: random(BALLOON_COLORS),
+    });
+  }
+
+  function popBalloon(b, i) {
+    score += 1;
+    for (let n = 0; n < 14; n++) {
+      const a = random(TWO_PI);
+      const spd = random(2, 7);
+      particles.push({
+        x: b.x, y: b.y,
+        vx: cos(a) * spd, vy: sin(a) * spd - 2,
+        life: 1, color: b.color,
+      });
+    }
+    balloons.splice(i, 1);
+    updateHud();
+  }
+
+  function setup() {
+    createCanvas(windowWidth, windowHeight);
+    px = width / 2;
+    py = height * 0.75;
+    for (let i = 0; i < 6; i++) {
+      clouds.push({
+        x: random(width), y: random(40, height * 0.35),
+        s: random(0.6, 1.4), spd: random(0.15, 0.4),
+      });
+    }
+    connect();
+  }
+
+  function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    px = constrain(px, POINTER_R, width - POINTER_R);
+    py = constrain(py, POINTER_R, height - POINTER_R);
+  }
+
+  function keyPressed() {
+    if (key === ' ') startGame();
+  }
+
+  function mousePressed() {
+    if (!playing) startGame();
+  }
+
+  function drawSky() {
+    for (let y = 0; y < height; y++) {
+      const t = y / height;
+      const r = lerp(135, 200, t);
+      const g = lerp(206, 230, t);
+      const b = lerp(235, 255, t);
+      stroke(r, g, b);
+      line(0, y, width, y);
+    }
+  }
+
+  function drawCloud(cx, cy, s) {
+  push();
+  translate(cx, cy);
+  scale(s);
+  noStroke();
+  fill(255, 255, 255, 200);
+  ellipse(0, 0, 80, 40);
+  ellipse(-35, 8, 50, 35);
+  ellipse(35, 8, 55, 38);
+  pop();
+  }
+
+  function drawBalloon(b) {
+    b.wobble += 0.04;
+    const wobX = sin(b.wobble) * 3;
+
+    noStroke();
+    stroke(b.color[0] * 0.6, b.color[1] * 0.6, b.color[2] * 0.6);
+    strokeWeight(1.5);
+    line(b.x + wobX, b.y + b.r * 0.85, b.x + wobX, b.y + b.r + 28);
+
+    noStroke();
+    fill(b.color[0], b.color[1], b.color[2]);
+    ellipse(b.x + wobX, b.y, b.r * 2, b.r * 2.15);
+
+    fill(255, 255, 255, 90);
+    ellipse(b.x + wobX - b.r * 0.25, b.y - b.r * 0.25, b.r * 0.5, b.r * 0.65);
+
+    fill(b.color[0] * 0.8, b.color[1] * 0.8, b.color[2] * 0.8);
+    triangle(
+      b.x + wobX - 5, b.y + b.r * 0.85,
+      b.x + wobX + 5, b.y + b.r * 0.85,
+      b.x + wobX, b.y + b.r + 4,
+    );
+  }
+
+  function drawPointer() {
+    noFill();
+    stroke(255, 80, 80, 180);
+    strokeWeight(3);
+    circle(px, py, POINTER_R * 2.8);
+
+    fill(255, 60, 60);
+    noStroke();
+    circle(px, py, POINTER_R * 2);
+
+    fill(255, 200, 200);
+    circle(px - 4, py - 4, 8);
+  }
+
+  function draw() {
+    drawSky();
+
+    for (const c of clouds) {
+      c.x += c.spd;
+      if (c.x > width + 100) c.x = -100;
+      drawCloud(c.x, c.y, c.s);
+    }
+
+    if (playing) {
+      if (millis() - lastSpawn > spawnInterval) {
+        spawnBalloon();
+        lastSpawn = millis();
+        if (score > 10) spawnInterval = max(450, 900 - score * 8);
+      }
+
+      for (let i = balloons.length - 1; i >= 0; i--) {
+        const b = balloons[i];
+        b.y -= b.speed;
+        drawBalloon(b);
+
+        if (dist(px, py, b.x, b.y) < POINTER_R + b.r * 0.85) {
+          popBalloon(b, i);
+          continue;
+        }
+
+        if (b.y + b.r < -20) {
+          balloons.splice(i, 1);
+          lives -= 1;
+          updateHud();
+          if (lives <= 0) endGame();
+        }
+      }
+    } else {
+      for (const b of balloons) drawBalloon(b);
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.15;
+      p.life -= 0.03;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      noStroke();
+      fill(p.color[0], p.color[1], p.color[2], p.life * 255);
+      circle(p.x, p.y, 6 * p.life);
+    }
+
+    drawPointer();
+  }
+</script>
+</body>
+</html>

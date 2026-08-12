@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pointer display</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b0f; overflow: hidden; }
+  #status {
+    position: fixed; top: 12px; left: 12px; color: #888;
+    font-family: monospace; font-size: 13px; z-index: 10;
+  }
+  #hint {
+    position: fixed; bottom: 12px; left: 12px; color: #555;
+    font-family: monospace; font-size: 12px; z-index: 10;
+  }
+  #hint a { color: #4da3ff; }
+</style>
+</head>
+<body>
+<div id="status">Connecting...</div>
+<div id="hint">Tilt your phone to move the pointer. <a href="/game.html">Play Balloon Popper</a></div>
+<script>
+  const statusEl = document.getElementById('status');
+  const SENSITIVITY = 2000;
+  const POINTER_R = 16;
+
+  let px = 0;
+  let py = 0;
+  let ws;
+
+  function connect() {
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${wsProtocol}//${location.host}`);
+
+    ws.onopen = () => { statusEl.textContent = 'Connected. Waiting for phone (Zig Sim)...'; };
+    ws.onclose = () => {
+      statusEl.textContent = 'Disconnected, retrying...';
+      setTimeout(connect, 1000);
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.shoot) return;
+      if (typeof data.dx !== 'number') return;
+      px += data.dx * SENSITIVITY;
+      py += data.dy * SENSITIVITY;
+      px = constrain(px, POINTER_R, width - POINTER_R);
+      py = constrain(py, POINTER_R, height - POINTER_R);
+      statusEl.textContent = 'Receiving phone data';
+    };
+  }
+
+  function setup() {
+    createCanvas(windowWidth, windowHeight);
+    px = width / 2;
+    py = height / 2;
+    connect();
+  }
+
+  function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    px = constrain(px, POINTER_R, width - POINTER_R);
+    py = constrain(py, POINTER_R, height - POINTER_R);
+  }
+
+  function draw() {
+    background(11, 11, 15);
+
+    fill(77, 163, 255);
+    circle(px, py, 32);
+
+    noFill();
+    stroke(77, 163, 255, 130);
+    strokeWeight(2);
+    circle(px, py, 48);
+  }
+</script>
+</body>
+</html>

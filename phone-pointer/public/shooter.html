@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Space Shooter</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 20px; pointer-events: none; z-index: 10;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fff; text-shadow: 0 0 8px rgba(0, 200, 255, 0.6);
+  }
+  #hud .score { font-size: 26px; font-weight: 700; color: #7df9ff; }
+  #hud .lives { font-size: 20px; color: #ff6b8a; }
+  #hud .status { font-size: 12px; opacity: 0.75; font-family: monospace; }
+  #overlay {
+    position: fixed; inset: 0; display: none; align-items: center;
+    justify-content: center; flex-direction: column; z-index: 20;
+    background: rgba(0, 5, 20, 0.82); color: #fff;
+    font-family: 'Segoe UI', system-ui, sans-serif; text-align: center;
+  }
+  #overlay.show { display: flex; }
+  #overlay h1 { margin: 0 0 10px; font-size: 46px; color: #7df9ff; letter-spacing: 2px; }
+  #overlay p { margin: 6px 0; font-size: 17px; opacity: 0.9; max-width: 420px; line-height: 1.5; }
+  #overlay .sub { font-size: 14px; opacity: 0.55; margin-top: 18px; }
+  #overlay a { color: #7df9ff; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="score">Score: <span id="scoreVal">0</span></div>
+  <div class="status" id="status">Connecting...</div>
+  <div class="lives" id="livesVal">♥ ♥ ♥</div>
+</div>
+<div id="overlay" class="show">
+  <h1 id="overlayTitle">Space Shooter</h1>
+  <p id="overlayMsg">Tilt your phone left &amp; right to fly. Tap the screen to fire lasers.</p>
+  <p>Destroy enemy ships before they reach you!</p>
+  <p class="sub">Press Space or click to start · <a href="/game.html">Balloon Popper</a></p>
+</div>
+<script>
+  const SENSITIVITY = 2200;
+  const SHIP_W = 52;
+  const SHIP_H = 48;
+  const FIRE_COOLDOWN = 160;
+  const MAX_LIVES = 3;
+
+  let ws, playing = false;
+  let shipX, score = 0, lives = MAX_LIVES;
+  let lastFire = 0;
+  let lasers = [];
+  let enemies = [];
+  let particles = [];
+  let explosions = [];
+  let stars = [];
+  let lastSpawn = 0;
+  let spawnInterval = 1400;
+  let wave = 1;
+  let shootFlash = 0;
+  let playerHitFlash = 0;
+  let enginePhase = 0;
+
+  const statusEl = document.getElementById('status');
+  const scoreEl = document.getElementById('scoreVal');
+  const livesEl = document.getElementById('livesVal');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlayMsg = document.getElementById('overlayMsg');
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}`);
+    ws.onopen = () => { statusEl.textContent = 'Phone connected'; };
+    ws.onclose = () => {
+      statusEl.textContent = 'Reconnecting...';
+      setTimeout(connect, 1000);
+    };
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.shoot) {
+        shootFlash = 10;
+        if (playing) fireLaser();
+        return;
+      }
+      if (!playing || typeof data.dx !== 'number') return;
+      shipX += data.dx * SENSITIVITY;
+      shipX = constrain(shipX, SHIP_W, width - SHIP_W);
+    };
+  }
+
+  function updateHud() {
+    scoreEl.textContent = score;
+    livesEl.textContent = '♥ '.repeat(lives).trim() || '—';
+  }
+
+  function startGame() {
+    playing = true;
+    score = 0;
+    lives = MAX_LIVES;
+    wave = 1;
+    lasers = [];
+    enemies = [];
+    particles = [];
+    explosions = [];
+    spawnInterval = 1400;
+    lastSpawn = millis();
+    shipX = width / 2;
+    playerHitFlash = 0;
+    overlay.classList.remove('show');
+    updateHud();
+  }
+
+  function endGame() {
+    playing = false;
+    overlayTitle.textContent = 'Game Over';
+    overlayMsg.textContent = `Final score: ${score} · Wave ${wave}`;
+    overlay.classList.add('show');
+  }
+
+  function fireLaser() {
+    if (millis() - lastFire < FIRE_COOLDOWN) return;
+    lastFire = millis();
+    const y = height - SHIP_H - 24;
+    const beam = { length: 56, width: 7, speed: 18, pulse: random(TWO_PI) };
+    lasers.push({ x: shipX - 14, y, ...beam });
+    lasers.push({ x: shipX + 14, y, ...beam, pulse: beam.pulse + 1 });
+  }
+
+  function spawnEnemy() {
+    const heavy = wave > 3 && random() < 0.25;
+    const scale = heavy ? 1.25 : random(0.85, 1.1);
+    const w = 46 * scale;
+    const h = 40 * scale;
+    enemies.push({
+      x: random(w, width - w),
+      y: -h,
+      w, h, scale,
+      speed: random(1.4, 2.6) + wave * 0.12,
+      hp: heavy ? 2 : 1,
+      maxHp: heavy ? 2 : 1,
+      wobble: random(TWO_PI),
+      type: heavy ? 'cruiser' : (random() < 0.5 ? 'scout' : 'raider'),
+      tilt: 0,
+    });
+  }
+
+  function spawnSparks(x, y, color, count, speed = 8) {
+    for (let i = 0; i < count; i++) {
+      const a = random(TWO_PI);
+      const spd = random(1.5, speed);
+      particles.push({
+        x, y,
+        vx: cos(a) * spd,
+        vy: sin(a) * spd,
+        life: random(0.5, 1),
+        size: random(2, 6),
+        color,
+        kind: 'spark',
+      });
+    }
+  }
+
+  function spawnDebris(x, y, w, h, palette, count = 10) {
+    for (let i = 0; i < count; i++) {
+      const a = random(TWO_PI);
+      const spd = random(2, 9);
+      particles.push({
+        x: x + random(-w * 0.3, w * 0.3),
+        y: y + random(-h * 0.3, h * 0.3),
+        vx: cos(a) * spd,
+        vy: sin(a) * spd - random(0, 2),
+        rot: random(TWO_PI),
+        rotV: random(-0.2, 0.2),
+        life: random(0.6, 1.2),
+        w: random(6, 14),
+        h: random(4, 10),
+        color: palette[floor(random(palette.length))],
+        kind: 'debris',
+      });
+    }
+  }
+
+  function destroyShip(x, y, w, h, palette, big = false) {
+    explosions.push({
+      x, y, w, h,
+      t: 0,
+      duration: big ? 55 : 42,
+      flash: 1,
+      ring: 0,
+      smoke: [],
+    });
+    spawnDebris(x, y, w, h, palette, big ? 18 : 12);
+    spawnSparks(x, y, [255, 240, 180], big ? 24 : 16, big ? 12 : 9);
+    spawnSparks(x, y, [255, 120, 60], big ? 14 : 10, big ? 10 : 7);
+
+    for (let i = 0; i < (big ? 8 : 5); i++) {
+      explosions[explosions.length - 1].smoke.push({
+        x: x + random(-w * 0.2, w * 0.2),
+        y: y + random(-h * 0.2, h * 0.2),
+        vx: random(-1.5, 1.5),
+        vy: random(-3, -1),
+        life: 1,
+        size: random(12, 22),
+      });
+    }
+  }
+
+  const ENEMY_PALETTES = {
+    scout: [[180, 50, 90], [120, 30, 60], [255, 100, 140]],
+    raider: [[160, 60, 220], [90, 30, 140], [220, 140, 255]],
+    cruiser: [[200, 80, 40], [120, 50, 20], [255, 200, 80]],
+  };
+
+  function setup() {
+    createCanvas(windowWidth, windowHeight);
+    shipX = width / 2;
+    for (let i = 0; i < 100; i++) {
+      stars.push({
+        x: random(width), y: random(height),
+        s: random(0.5, 2.8), spd: random(0.4, 2.2),
+        twinkle: random(TWO_PI),
+      });
+    }
+    connect();
+  }
+
+  function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    shipX = constrain(shipX, SHIP_W, width - SHIP_W);
+  }
+
+  function keyPressed() {
+    if (key === ' ') {
+      if (!playing) startGame();
+      else fireLaser();
+    }
+    if (playing) {
+      if (keyCode === LEFT_ARROW) shipX -= 24;
+      if (keyCode === RIGHT_ARROW) shipX += 24;
+      shipX = constrain(shipX, SHIP_W, width - SHIP_W);
+    }
+  }
+
+  function mousePressed() {
+    if (!playing) startGame();
+    else fireLaser();
+  }
+
+  function drawStars() {
+    for (const s of stars) {
+      s.y += s.spd;
+      s.twinkle += 0.05;
+      if (s.y > height) { s.y = 0; s.x = random(width); }
+      const b = 140 + sin(s.twinkle) * 60 + s.s * 30;
+      fill(200, 220, 255, b);
+      noStroke();
+      circle(s.x, s.y, s.s);
+    }
+  }
+
+  function drawPlayerShip(x, y) {
+    enginePhase += 0.25;
+    const flame = 14 + sin(enginePhase) * 5;
+
+    if (shootFlash > 0) {
+      shootFlash--;
+      noFill();
+      stroke(100, 220, 255, 80 + shootFlash * 12);
+      strokeWeight(2);
+      ellipse(x, y - 6, SHIP_W + shootFlash * 5, SHIP_H + shootFlash * 4);
+    }
+
+    if (playerHitFlash > 0) {
+      playerHitFlash--;
+      fill(255, 80, 80, playerHitFlash * 20);
+      noStroke();
+      ellipse(x, y, SHIP_W * 1.6, SHIP_H * 1.6);
+    }
+
+    push();
+    translate(x, y);
+
+    // Engine glow
+    drawingContext.shadowBlur = 20;
+    drawingContext.shadowColor = 'rgba(255, 140, 50, 0.8)';
+    fill(255, 160, 50, 200);
+    noStroke();
+    ellipse(-12, SHIP_H * 0.28, 10, flame);
+    ellipse(12, SHIP_H * 0.28, 10, flame);
+    fill(255, 240, 120, 220);
+    ellipse(-12, SHIP_H * 0.22, 5, flame * 0.55);
+    ellipse(12, SHIP_H * 0.22, 5, flame * 0.55);
+    drawingContext.shadowBlur = 0;
+
+    // Wings
+    fill(35, 95, 170);
+    stroke(120, 200, 255);
+    strokeWeight(1.5);
+    beginShape();
+    vertex(0, -SHIP_H * 0.48);
+    vertex(-SHIP_W * 0.48, SHIP_H * 0.05);
+    vertex(-SHIP_W * 0.38, SHIP_H * 0.32);
+    vertex(-10, SHIP_H * 0.18);
+  vertex(0, SHIP_H * 0.28);
+    vertex(10, SHIP_H * 0.18);
+    vertex(SHIP_W * 0.38, SHIP_H * 0.32);
+    vertex(SHIP_W * 0.48, SHIP_H * 0.05);
+    endShape(CLOSE);
+
+    // Fuselage
+    fill(55, 140, 220);
+    noStroke();
+    beginShape();
+    vertex(0, -SHIP_H * 0.5);
+    vertex(-9, SHIP_H * 0.1);
+    vertex(-7, SHIP_H * 0.35);
+    vertex(7, SHIP_H * 0.35);
+    vertex(9, SHIP_H * 0.1);
+    endShape(CLOSE);
+
+    // Cockpit
+    fill(160, 235, 255, 230);
+    stroke(220, 250, 255);
+    strokeWeight(1);
+    ellipse(0, -SHIP_H * 0.12, 14, 20);
+
+  fill(255, 255, 255, 120);
+    noStroke();
+    ellipse(-3, -SHIP_H * 0.16, 4, 8);
+
+    // Wing accents
+    stroke(80, 180, 255, 150);
+    strokeWeight(1);
+    line(-SHIP_W * 0.3, 0, -18, SHIP_H * 0.12);
+    line(SHIP_W * 0.3, 0, 18, SHIP_H * 0.12);
+
+    pop();
+  }
+
+  function drawEnemyShip(e) {
+    e.wobble += 0.06;
+    e.tilt = sin(e.wobble) * 0.12;
+    const bob = sin(e.wobble * 1.3) * 2;
+    const s = e.scale || 1;
+
+    push();
+    translate(e.x, e.y + bob);
+    rotate(PI + e.tilt);
+    scale(s);
+
+    const w = e.w / s;
+    const h = e.h / s;
+
+    if (e.type === 'scout') {
+      fill(140, 35, 70);
+      stroke(255, 110, 150);
+      strokeWeight(1.5);
+      beginShape();
+      vertex(0, -h * 0.5);
+      vertex(-w * 0.42, h * 0.15);
+      vertex(-w * 0.2, h * 0.45);
+      vertex(0, h * 0.3);
+      vertex(w * 0.2, h * 0.45);
+      vertex(w * 0.42, h * 0.15);
+      endShape(CLOSE);
+
+      fill(255, 60, 100, 200);
+      noStroke();
+      ellipse(0, -h * 0.05, 10, 14);
+      fill(255, 180, 200, 180);
+      ellipse(0, -h * 0.08, 4, 6);
+
+      stroke(200, 60, 100, 120);
+      line(-w * 0.25, h * 0.2, -w * 0.35, h * 0.42);
+      line(w * 0.25, h * 0.2, w * 0.35, h * 0.42);
+    } else if (e.type === 'raider') {
+      fill(90, 30, 130);
+      stroke(200, 120, 255);
+      strokeWeight(1.5);
+      beginShape();
+      vertex(0, -h * 0.52);
+      vertex(-w * 0.5, -h * 0.05);
+      vertex(-w * 0.35, h * 0.4);
+      vertex(0, h * 0.25);
+      vertex(w * 0.35, h * 0.4);
+      vertex(w * 0.5, -h * 0.05);
+      endShape(CLOSE);
+
+      fill(60, 20, 90);
+      noStroke();
+      triangle(-8, h * 0.1, 0, h * 0.35, 8, h * 0.1);
+
+      fill(180, 100, 255, 220);
+      stroke(240, 200, 255);
+      ellipse(0, -h * 0.15, 12, 12);
+
+      fill(255, 255, 255, 150);
+      noStroke();
+      ellipse(-2, -h * 0.17, 3, 3);
+    } else {
+      // cruiser — armored heavy ship
+      fill(100, 45, 25);
+      stroke(255, 170, 80);
+      strokeWeight(2);
+      rect(-w * 0.38, -h * 0.35, w * 0.76, h * 0.7, 4);
+
+      fill(140, 65, 30);
+      noStroke();
+      beginShape();
+      vertex(0, -h * 0.55);
+      vertex(-12, -h * 0.2);
+      vertex(12, -h * 0.2);
+      endShape(CLOSE);
+
+      fill(255, 120, 40, 200);
+      stroke(255, 200, 100);
+      strokeWeight(1);
+      rect(-w * 0.28, -h * 0.1, w * 0.56, 6, 2);
+
+      stroke(255, 140, 60, 100);
+      strokeWeight(1);
+      line(-w * 0.3, h * 0.2, -w * 0.42, h * 0.42);
+      line(w * 0.3, h * 0.2, w * 0.42, h * 0.42);
+
+      if (e.hp > 1) {
+        fill(255, 220, 80);
+        noStroke();
+        ellipse(0, 0, 10, 10);
+      }
+    }
+
+    pop();
+  }
+
+  function drawLaser(l) {
+    l.pulse += 0.35;
+    const len = l.length;
+    const w = l.width;
+    const tipY = l.y - len;
+    const flicker = 1 + sin(l.pulse) * 0.15;
+
+    drawingContext.shadowBlur = 22;
+    drawingContext.shadowColor = 'rgba(80, 220, 255, 0.9)';
+
+    // Outer plasma glow
+    noStroke();
+    for (let i = 3; i >= 0; i--) {
+      const t = i / 3;
+      const alpha = 40 + t * 50;
+      const gw = w * (1.8 - t * 0.3) * flicker;
+      fill(60, 180, 255, alpha);
+      rect(l.x - gw / 2, tipY, gw, len, 4);
+    }
+
+    // Core beam
+    fill(180, 250, 255, 230);
+    rect(l.x - w * 0.35, tipY, w * 0.7, len, 2);
+
+    // Hot center line
+    fill(255, 255, 255, 240);
+    rect(l.x - 1.5, tipY, 3, len);
+
+    // Bright tip
+    fill(255, 255, 255, 255);
+    ellipse(l.x, tipY, w * 1.2 * flicker, w * 0.9);
+
+    fill(200, 240, 255, 180);
+    ellipse(l.x, tipY + 8, w * 0.6, w * 0.5);
+
+    drawingContext.shadowBlur = 0;
+
+    // Trailing particles
+    if (random() < 0.5) {
+      particles.push({
+        x: l.x + random(-3, 3),
+        y: l.y - random(0, len),
+        vx: random(-0.5, 0.5),
+        vy: random(0.5, 2),
+        life: random(0.2, 0.45),
+        size: random(2, 4),
+        color: [120, 230, 255],
+        kind: 'spark',
+      });
+    }
+  }
+
+  function drawExplosions() {
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      const ex = explosions[i];
+      ex.t++;
+      const p = ex.t / ex.duration;
+
+      if (p < 0.15) {
+        const flashA = (1 - p / 0.15) * 255;
+        noStroke();
+        fill(255, 250, 220, flashA);
+        ellipse(ex.x, ex.y, ex.w * (1 + p * 4), ex.h * (1 + p * 4));
+        fill(255, 180, 80, flashA * 0.7);
+        ellipse(ex.x, ex.y, ex.w * (0.6 + p * 2), ex.h * (0.6 + p * 2));
+      }
+
+      const ringR = ex.w * (0.5 + p * 2.5);
+      noFill();
+      stroke(255, 160, 60, (1 - p) * 180);
+      strokeWeight(3 - p * 2);
+      ellipse(ex.x, ex.y, ringR, ringR * 0.85);
+
+      stroke(255, 100, 50, (1 - p) * 120);
+      strokeWeight(2);
+      ellipse(ex.x, ex.y, ringR * 0.7, ringR * 0.6);
+
+      for (const sm of ex.smoke) {
+        sm.x += sm.vx;
+        sm.y += sm.vy;
+        sm.life -= 0.018;
+        if (sm.life <= 0) continue;
+        noStroke();
+        fill(80, 80, 90, sm.life * 100);
+        ellipse(sm.x, sm.y, sm.size * (2 - sm.life), sm.size * (2 - sm.life));
+      }
+
+      if (ex.t >= ex.duration) explosions.splice(i, 1);
+    }
+  }
+
+  function drawParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += p.kind === 'debris' ? 0.08 : 0.02;
+      p.life -= p.kind === 'debris' ? 0.012 : 0.04;
+
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+
+      if (p.kind === 'debris') {
+        push();
+        translate(p.x, p.y);
+        rotate(p.rot);
+        p.rot += p.rotV;
+        noStroke();
+        fill(p.color[0], p.color[1], p.color[2], p.life * 255);
+        rect(-p.w / 2, -p.h / 2, p.w, p.h, 1);
+        pop();
+      } else {
+        noStroke();
+        fill(p.color[0], p.color[1], p.color[2], p.life * 255);
+        circle(p.x, p.y, p.size * p.life);
+      }
+    }
+  }
+
+  function updateGame() {
+    if (millis() - lastSpawn > spawnInterval) {
+      spawnEnemy();
+      lastSpawn = millis();
+      if (score > 0 && score % 10 === 0) {
+        wave = floor(score / 10) + 1;
+        spawnInterval = max(550, 1400 - wave * 80);
+      }
+    }
+
+    for (let i = lasers.length - 1; i >= 0; i--) {
+      const l = lasers[i];
+      l.y -= l.speed;
+      if (l.y - l.length < -30) { lasers.splice(i, 1); continue; }
+
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        const hitW = e.w * 0.75;
+        const hitH = e.h * 0.75;
+        if (l.x > e.x - hitW / 2 && l.x < e.x + hitW / 2 &&
+            l.y - l.length < e.y + hitH / 2 && l.y > e.y - hitH / 2) {
+          e.hp -= 1;
+          lasers.splice(i, 1);
+          spawnSparks(l.x, l.y - l.length * 0.5, [150, 240, 255], 6, 6);
+
+          if (e.hp <= 0) {
+            const points = e.maxHp || 1;
+            destroyShip(e.x, e.y, e.w, e.h, ENEMY_PALETTES[e.type], e.maxHp > 1);
+            enemies.splice(j, 1);
+            score += points;
+            updateHud();
+          } else {
+            spawnSparks(e.x, e.y, [255, 200, 80], 8, 5);
+          }
+          break;
+        }
+      }
+    }
+
+    const shipY = height - SHIP_H - 24;
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      const e = enemies[i];
+      e.y += e.speed;
+
+      const hitShip = abs(e.x - shipX) < (e.w + SHIP_W) / 2 * 0.55 &&
+                      abs(e.y - shipY) < (e.h + SHIP_H) / 2 * 0.55;
+      if (hitShip) {
+        destroyShip(e.x, e.y, e.w, e.h, ENEMY_PALETTES[e.type], true);
+        destroyShip(shipX, shipY, SHIP_W, SHIP_H, [[55, 140, 220], [35, 95, 170], [120, 200, 255]], true);
+        playerHitFlash = 15;
+        enemies.splice(i, 1);
+        lives -= 1;
+        updateHud();
+        if (lives <= 0) endGame();
+        continue;
+      }
+
+      if (e.y > height + 50) {
+        enemies.splice(i, 1);
+        lives -= 1;
+        updateHud();
+        if (lives <= 0) endGame();
+      }
+    }
+  }
+
+  function draw() {
+    background(4, 6, 18);
+    drawStars();
+
+    if (playing) updateGame();
+
+    for (const l of lasers) drawLaser(l);
+    for (const e of enemies) drawEnemyShip(e);
+    drawExplosions();
+    drawParticles();
+
+    if (playing || overlay.classList.contains('show')) {
+      drawPlayerShip(shipX, height - SHIP_H - 24);
+    }
+  }
+</script>
+</body>
+</html>

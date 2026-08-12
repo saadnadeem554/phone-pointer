@@ -1,0 +1,14 @@
+{
+  "name": "phone-pointer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "osc": "^2.4.5",
+    "ws": "^8.18.0"
+  }
+}
